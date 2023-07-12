@@ -1,0 +1,10 @@
+# 不要训练日志和模型文件
+/snapshots
+
+#不要images
+/images
+
+#不要onnx
+/onnx
+
+部署教学.md

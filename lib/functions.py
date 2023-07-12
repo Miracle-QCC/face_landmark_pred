@@ -1,3 +1,4 @@
+import copy
 import os, cv2
 import numpy as np
 from PIL import Image, ImageFilter
@@ -7,10 +8,78 @@ import torch.nn as nn
 import random
 import time
 from scipy.integrate import simps
+import torch.nn.functional as F
 
+
+
+
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+# class FocalLoss(nn.Module):
+#     "Non weighted version of Focal Loss"
+#     def __init__(self, alpha=.6, gamma=2):
+#         super(FocalLoss, self).__init__()
+#         self.alpha = torch.tensor([alpha, 1-alpha]).to(device)
+#         self.gamma = gamma
+#
+#     def forward(self, inputs, targets):
+#         BCE_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+#         targets = targets.type(torch.long)
+#         at = self.alpha.gather(0, targets.data.view(-1))
+#         pt = torch.exp(-BCE_loss)
+#         F_loss = at*(1-pt)**self.gamma * BCE_loss
+#         return F_loss.mean()
+
+
+def focalloss(inputs, targets, alpha = 0.6, gamma=2, flag_num=2):
+    alpha = torch.tensor([alpha, 1 - alpha]).to(device)
+    new_targets = torch.where(targets == 1, 1.0, 0.0).to(device)
+    BCE_loss = F.binary_cross_entropy_with_logits(inputs, new_targets, reduction='none')
+    new_targets = new_targets.type(torch.long)
+    at = alpha.gather(0, new_targets.data.view(-1))
+    pt = torch.exp(-BCE_loss)
+    F_loss = at * (1 - pt) ** gamma * BCE_loss * (targets != flag_num)
+    return F_loss.mean()
+
+def focalloss_blur(inputs, targets, alpha = 0.6, gamma=2):
+    """
+    针对blurness检测，label=2时表示模糊处理，其余0，1都不是
+    :param inputs:
+    :param targets:
+    :param alpha:
+    :param gamma:
+    :return:
+    """
+    new_targets = torch.where(targets==2 ,1.0, 0.0).to(device)
+    alpha = torch.tensor([alpha, 1 - alpha]).to(device)
+    BCE_loss = F.binary_cross_entropy_with_logits(inputs, new_targets, reduction='none')
+    new_targets = new_targets.type(torch.long)
+    at = alpha.gather(0, new_targets.data.view(-1))
+    pt = torch.exp(-BCE_loss)
+    F_loss = at * (1 - pt) ** gamma * BCE_loss
+    return F_loss.mean()
 
 def get_label(data_name, label_file, task_type=None):
     label_path = os.path.join('data', data_name, label_file)
+    with open(label_path, 'r') as f:
+        labels = f.readlines()
+    labels = [x.strip().split() for x in labels]
+    if len(labels[0])==1:
+        return labels
+
+    labels_new = []
+    for label in labels:
+        image_name = label[0]
+        target = label[1:]
+        target = np.array([float(x) for x in target])
+        if task_type is None:
+            labels_new.append([image_name, target])
+        else:
+            labels_new.append([image_name, task_type, target])
+    return labels_new
+
+def get_label_5(data_name, label_file, task_type=None):
+    label_path = os.path.join(data_name, label_file)
     with open(label_path, 'r') as f:
         labels = f.readlines()
     labels = [x.strip().split() for x in labels]
@@ -108,6 +177,92 @@ def compute_loss_pip(outputs_map, outputs_local_x, outputs_local_y, outputs_nb_x
     loss_nb_y = criterion_reg(outputs_nb_y_select, labels_nb_y_select)
     return loss_map, loss_x, loss_y, loss_nb_x, loss_nb_y
 
+
+def compute_loss_pip_5(outputs_map, outputs_local_x, outputs_local_y, labels_map, labels_local_x, labels_local_y,  criterion_cls, criterion_reg, label, score):
+
+    tmp_batch, tmp_channel, tmp_height, tmp_width = outputs_map.size()
+    labels_map = labels_map.view(tmp_batch*tmp_channel, -1)
+    labels_max_ids = torch.argmax(labels_map, 1)
+    labels_max_ids = labels_max_ids.view(-1, 1)
+
+    outputs_local_x = outputs_local_x.view(tmp_batch*tmp_channel, -1)
+    outputs_local_x_select = torch.gather(outputs_local_x, 1, labels_max_ids)
+    outputs_local_y = outputs_local_y.view(tmp_batch*tmp_channel, -1)
+    outputs_local_y_select = torch.gather(outputs_local_y, 1, labels_max_ids)
+
+    labels_local_x = labels_local_x.view(tmp_batch*tmp_channel, -1)
+    labels_local_x_select = torch.gather(labels_local_x, 1, labels_max_ids)
+    labels_local_y = labels_local_y.view(tmp_batch*tmp_channel, -1)
+    labels_local_y_select = torch.gather(labels_local_y, 1, labels_max_ids)
+
+    flag = label.repeat_interleave(5, dim=0)
+    outputs_local_x_select_ = outputs_local_x_select * flag
+    outputs_local_y_select_ = outputs_local_y_select * flag
+    labels_map = labels_map.view(tmp_batch, tmp_channel, tmp_height, tmp_width)
+    loss_map = criterion_cls(outputs_map, labels_map)
+    loss_x = criterion_reg(outputs_local_x_select_, labels_local_x_select)
+    loss_y = criterion_reg(outputs_local_y_select_, labels_local_y_select)
+
+    score = F.sigmoid(score)
+    loss_score = focalloss(score, label)
+
+    return loss_map, loss_x, loss_y, loss_score
+
+def compute_loss_pip_5_(x_pred, y_pred, score, x_label, y_label, label, criterion_reg):
+
+    x_pred = x_pred.squeeze()
+    y_pred = y_pred.squeeze()
+
+    x_pred = x_pred * label.repeat(1,5)
+    y_pred = y_pred * label.repeat(1,5)
+
+    loss_x = criterion_reg(x_pred, x_label)
+    loss_y = criterion_reg(y_pred, y_label)
+
+    loss_x = torch.sqrt(loss_x)
+    loss_y = torch.sqrt(loss_y)
+
+    score = F.sigmoid(score)
+    score = score.view(-1,1)
+    loss_score = focalloss(score, label)
+
+    return loss_x, loss_y, loss_score
+
+
+def compute_loss_pip_5_blurness(x_pred, y_pred, score, blur_score, x_label, y_label, label, criterion_reg):
+    """
+    增加了一维预测blurness
+    :param x_pred:
+    :param y_pred:
+    :param score:
+    :param x_label:
+    :param y_label:
+    :param label: 0,1,2
+    :param criterion_reg:
+    :return:
+    """
+    x_pred = x_pred.squeeze()
+    y_pred = y_pred.squeeze()
+
+    x_pred = x_pred * (label == 1)
+    y_pred = y_pred * (label == 1)
+
+    loss_x = criterion_reg(x_pred, x_label)
+    loss_y = criterion_reg(y_pred, y_label)
+
+    loss_x = torch.sqrt(loss_x)
+    loss_y = torch.sqrt(loss_y)
+
+    score = F.sigmoid(score)
+    score = score.view(-1, 1)
+    loss_score = focalloss(score, label)
+
+    # loss blur
+    blur_score = F.sigmoid(blur_score)
+    blur_score = blur_score.view(-1,1)
+    loss_blur = focalloss_blur(blur_score, label)
+    return loss_x, loss_y, loss_score, loss_blur
+
 def train_model(det_head, net, train_loader, criterion_cls, criterion_reg, cls_loss_weight, reg_loss_weight, num_nb, optimizer, num_epochs, scheduler, save_dir, save_interval, device):
     for epoch in range(num_epochs):
         print('Epoch {}/{}'.format(epoch, num_epochs - 1))
@@ -132,6 +287,9 @@ def train_model(det_head, net, train_loader, criterion_cls, criterion_reg, cls_l
             else:
                 print('No such head:', det_head)
                 exit(0)
+            # TODO  测试L1 loss
+            loss = 0 * loss
+
 
             optimizer.zero_grad()
             loss.backward()
@@ -153,6 +311,120 @@ def train_model(det_head, net, train_loader, criterion_cls, criterion_reg, cls_l
             print(filename, 'saved')
         scheduler.step()
     return net
+
+def train_model_5(det_head, net, train_loader, criterion_cls, criterion_reg, cls_loss_weight, reg_loss_weight, optimizer, num_epochs, scheduler, save_dir, save_interval, device, logger):
+    for epoch in range(num_epochs):
+        # print('Epoch {}/{}'.format(epoch, num_epochs - 1))
+        logger.info('Epoch {}/{}'.format(epoch, num_epochs - 1))
+        # print('-' * 10)
+        logger.info('-' * 10)
+        net.train()
+        epoch_loss = 0.0
+
+        for i, data in enumerate(train_loader):
+
+            if det_head == 'pip':
+                img_names, inputs, target, label = data
+                inputs = inputs.to(device)
+                target = target.to(device)
+                x_label = target[:,::2]
+                y_label = target[:,1::2]
+
+                # img = inputs[0]
+                # img = img.permute(1, 2, 0)
+                # img = img * 128 + 128
+                # img = img.cpu().numpy()
+                # img = img.astype(np.uint8)
+                #
+                # # im_ = np.array(img)
+                # b, g, r = cv2.split(img)
+                # img = cv2.merge([r, g, b])
+                # for i in range(5):
+                #     cv2.circle(img, (int(x_label[0, i] * 128), int(y_label[0, i] * 128)), 1, (0, 0, 255), 2)
+                #     cv2.putText(img, str(i), (int(x_label[0, i] * 128), int(y_label[0, i] * 128)), 1, 1,
+                #                 (0, 0, 255), 2)
+                #
+                # cv2.imshow("x", img)
+                # cv2.waitKey(0)
+
+                label = label.to(device).float()
+                x_pred, y_pred, score = net(inputs)
+                loss_x, loss_y, loss_score = compute_loss_pip_5_(x_pred, y_pred, score, x_label, y_label, label, criterion_reg)
+                loss = reg_loss_weight*loss_x + reg_loss_weight*loss_y + loss_score * cls_loss_weight
+            else:
+                logger.info('No such head:', det_head)
+                exit(0)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            if i%10 == 0:
+                if det_head == 'pip':
+                    logger.info('[Epoch {:d}/{:d}, Batch {:d}/{:d}] <Total loss: {:.6f}> <x loss: {:.6f}> <y loss: {:.6f}> <score loss: {:.6f}> '.format(
+                        epoch, num_epochs-1, i, len(train_loader)-1, loss.item(), reg_loss_weight*loss_x.item(), reg_loss_weight*loss_y.item(), reg_loss_weight*loss_score.item()))
+                    # logging.info('[Epoch {:d}/{:d}, Batch {:d}/{:d}] <Total loss: {:.6f}> <map loss: {:.6f}> <x loss: {:.6f}> <y loss: {:.6f}> <nbx loss: {:.6f}> '.format(
+                    #     epoch, num_epochs-1, i, len(train_loader)-1, loss.item(), cls_loss_weight*loss_map.item(), reg_loss_weight*loss_x.item(), reg_loss_weight*loss_y.item(), reg_loss_weight*loss_score.item()))
+                else:
+                    logger.info('No such head:' + det_head)
+                    exit(0)
+            epoch_loss += loss.item()
+        epoch_loss /= len(train_loader)
+        if epoch%(11-1) == 0 and epoch > 0:
+            filename = os.path.join(save_dir, 'epoch%d.pth' % epoch)
+            torch.save(net.state_dict(), filename)
+            logger.info(filename + 'saved')
+        scheduler.step()
+    return net
+
+
+def train_model_5_blurness(det_head, net, train_loader, criterion_reg, cls_loss_weight, reg_loss_weight, optimizer, num_epochs, scheduler, save_dir, device, logger):
+    for epoch in range(num_epochs):
+        # print('Epoch {}/{}'.format(epoch, num_epochs - 1))
+        logger.info('Epoch {}/{}'.format(epoch, num_epochs - 1))
+        # print('-' * 10)
+        logger.info('-' * 10)
+        net.train()
+        epoch_loss = 0.0
+
+        for i, data in enumerate(train_loader):
+
+            if det_head == 'pip':
+                img_names, inputs, target, label = data
+                inputs = inputs.to(device)
+                target = target.to(device)
+                x_label = target[:,::2]
+                y_label = target[:,1::2]
+
+
+                label = label.to(device).float()
+                x_pred, y_pred, score, blur_score = net(inputs)
+                loss_x, loss_y, loss_score, loss_blur = compute_loss_pip_5_blurness(x_pred, y_pred, score, blur_score, x_label, y_label, label, criterion_reg)
+                loss = reg_loss_weight*loss_x + reg_loss_weight*loss_y + loss_score * cls_loss_weight + loss_blur * reg_loss_weight
+            else:
+                logger.info('No such head:', det_head)
+                exit(0)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            if i%10 == 0:
+                if det_head == 'pip':
+                    logger.info('[Epoch {:d}/{:d}, Batch {:d}/{:d}] <Total loss: {:.6f}> <x loss: {:.6f}> <y loss: {:.6f}> <score loss: {:.6f}> <blur loss: {:.6f}> '.format(
+                        epoch, num_epochs-1, i, len(train_loader)-1, loss.item(), reg_loss_weight*loss_x.item(), reg_loss_weight*loss_y.item(), reg_loss_weight*loss_score.item(), loss_blur.item() * cls_loss_weight))
+                    # logging.info('[Epoch {:d}/{:d}, Batch {:d}/{:d}] <Total loss: {:.6f}> <map loss: {:.6f}> <x loss: {:.6f}> <y loss: {:.6f}> <nbx loss: {:.6f}> '.format(
+                    #     epoch, num_epochs-1, i, len(train_loader)-1, loss.item(), cls_loss_weight*loss_map.item(), reg_loss_weight*loss_x.item(), reg_loss_weight*loss_y.item(), reg_loss_weight*loss_score.item()))
+                else:
+                    logger.info('No such head:' + det_head)
+                    exit(0)
+            epoch_loss += loss.item()
+        epoch_loss /= len(train_loader)
+        if epoch%(11-1) == 0 and epoch > 0:
+            filename = os.path.join(save_dir, 'epoch%d.pth' % epoch)
+            torch.save(net.state_dict(), filename)
+            logger.info(filename + 'saved')
+        scheduler.step()
+    return net
+
 
 def forward_pip(net, inputs, preprocess, input_size, net_stride, num_nb):
     net.eval()

@@ -21,12 +21,15 @@ import data_utils
 from functions import * 
 from mobilenetv3 import mobilenetv3_large
 
-if not len(sys.argv) == 2:
-    print('Format:')
-    print('python lib/train.py config_file')
-    exit(0)
-experiment_name = sys.argv[1].split('/')[-1][:-3]
-data_name = sys.argv[1].split('/')[-2]
+# if not len(sys.argv) == 2:
+#     print('Format:')
+#     print('python lib/train.py config_file')
+#     exit(0)
+# experiments/data_300W/pip_32_16_60_r18_l2_l1_10_1_nb10.py
+# experiment_name = sys.argv[1].split('/')[-1][:-3]
+experiment_name = 'pip_32_16_60_r18_l2_l1_10_1_nb10.py'
+# data_name = sys.argv[1].split('/')[-2]
+data_name = 'data_300W'
 config_path = '.experiments.{}.{}'.format(data_name, experiment_name)
 
 my_config = importlib.import_module(config_path, package='PIPNet')
@@ -167,6 +170,9 @@ elif cfg.data_name == 'LaPa':
     points_flip = [33, 32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 47, 46, 45, 44, 43, 51, 50, 49, 48, 38, 37, 36, 35, 34, 42, 41, 40, 39, 52, 53, 54, 55, 66, 65, 64, 63, 62, 61, 60, 59, 58, 57, 56, 80, 79, 78, 77, 76, 83, 82, 81, 84, 71, 70, 69, 68, 67, 74, 73, 72, 75, 91, 90, 89, 88, 87, 86, 85, 96, 95, 94, 93, 92, 101, 100, 99, 98, 97, 104, 103, 102, 106, 105]
     points_flip = (np.array(points_flip)-1).tolist()
     assert len(points_flip) == 106
+elif cfg.data_name == "Widerface":
+    points_flip = [1, 0, 2, 4, 3] # five landmarks
+    points_flip = (np.array(points_flip) - 1).tolist()
 else:
     print('No such data!')
     exit(0)

@@ -148,24 +148,24 @@ class MobileNetV3(nn.Module):
         self.features = nn.Sequential(*layers)
         # building last several layers
         self.conv = conv_1x1_bn(input_channel, exp_size)
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        output_channel = {'large': 1280, 'small': 1024}
-        output_channel = _make_divisible(output_channel[mode] * width_mult, 8) if width_mult > 1.0 else output_channel[mode]
-        self.classifier = nn.Sequential(
-            nn.Linear(exp_size, output_channel),
-            h_swish(),
-            nn.Dropout(0.2),
-            nn.Linear(output_channel, num_classes),
-        )
+        # self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        # output_channel = {'large': 1280, 'small': 1024}
+        # output_channel = _make_divisible(output_channel[mode] * width_mult, 8) if width_mult > 1.0 else output_channel[mode]
+        # self.classifier = nn.Sequential(
+        #     nn.Linear(exp_size, output_channel),
+        #     h_swish(),
+        #     nn.Dropout(0.2),
+        #     nn.Linear(output_channel, num_classes),
+        # )
 
         self._initialize_weights()
 
     def forward(self, x):
         x = self.features(x)
         x = self.conv(x)
-        x = self.avgpool(x)
-        x = x.view(x.size(0), -1)
-        x = self.classifier(x)
+        # x = self.avgpool(x)
+        # x = x.view(x.size(0), -1)
+        # x = self.classifier(x)
         return x
 
     def _initialize_weights(self):
@@ -231,3 +231,23 @@ def mobilenetv3_small(**kwargs):
 
 
 
+def mobilenetv3_small_light(**kwargs):
+    """
+    Constructs a MobileNetV3-Small model
+    """
+    cfgs = [
+        # k, t, c, SE, HS, s
+        [3,    1,  16, 1, 0, 2],
+        [3,  4.5,  24, 0, 0, 2],
+        [3, 3.67,  24, 0, 0, 1],
+        # [5,    4,  40, 1, 1, 2],
+        # [5,    6,  40, 1, 1, 1],
+        # [5,    6,  40, 1, 1, 1],
+        # [5,    3,  48, 1, 1, 1],
+        # [5,    3,  48, 1, 1, 1],
+        # [5,    6,  96, 1, 1, 2],
+        # [5,    6,  96, 1, 1, 1],
+        # [5,    6,  96, 1, 1, 1],
+    ]
+
+    return MobileNetV3(cfgs, mode='small', **kwargs)
